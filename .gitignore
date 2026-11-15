@@ -20,3 +20,9 @@ mono_crash.*.json
 # Windows
 Thumbs.db
 Desktop.ini
+
+# Exported Android builds
+*.apk
+*.apk.idsig
+*.aab
+
