@@ -1,0 +1,22 @@
+# Godot 4+ specific ignores
+# Godot generated files
+.godot/
+.import/
+
+# Temporary files
+*.tmp
+
+# Generated translations
+*.translation
+
+# Android/export credentials
+export_credentials.cfg
+
+# C# / Mono generated files
+.mono/
+data_*/
+mono_crash.*.json
+
+# Windows
+Thumbs.db
+Desktop.ini
