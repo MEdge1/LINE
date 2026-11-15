@@ -15,6 +15,9 @@ class Unit:
 		value = unit_value
 
 
+# Emitted once per unit that the Output converts into currency.
+signal payout_received(amount: int)
+
 var money: int = LineBalance.START_MONEY
 var generator_level: int = 1
 var units: Array[Unit] = []
@@ -74,3 +77,4 @@ func _advance_units(delta: float) -> void:
 		else:
 			money += unit.value
 			units.remove_at(index)
+			payout_received.emit(unit.value)

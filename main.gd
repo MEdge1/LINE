@@ -20,6 +20,7 @@ func _ready() -> void:
 	_hud.upgrade_pressed.connect(_on_upgrade_pressed)
 	add_child(_hud)
 
+	_simulation.payout_received.connect(_on_payout_received)
 	_hud.refresh(_simulation, _view.generator_selected)
 
 
@@ -44,3 +45,8 @@ func _unhandled_input(event: InputEvent) -> void:
 func _on_upgrade_pressed() -> void:
 	_simulation.upgrade_generator()
 	_hud.refresh(_simulation, _view.generator_selected)
+
+
+func _on_payout_received(amount: int) -> void:
+	_view.show_payout(amount)
+	_hud.pulse_money()

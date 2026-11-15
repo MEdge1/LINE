@@ -12,6 +12,7 @@ func _init() -> void:
 	_test_generator_produces_one_unit_per_second()
 	_test_unit_is_processed_and_paid_at_output()
 	_test_upgrade_spends_money_and_increases_rate()
+	_test_payout_signal_matches_money_paid()
 
 	if _failures == 0:
 		print("All production simulation tests passed.")
@@ -47,6 +48,31 @@ func _test_unit_is_processed_and_paid_at_output() -> void:
 	_assert_equal(simulation.money, LineBalance.UNIT_START_VALUE * LineBalance.PROCESSOR_MULTIPLIER,
 		"first unit is multiplied by the processor and paid at output")
 	_assert_equal(simulation.units.size(), 2, "paid unit is removed; the two later units remain in flight")
+
+
+func _test_payout_signal_matches_money_paid() -> void:
+	var simulation := ProductionSimulation.new()
+	var payouts: Array[int] = []
+	simulation.payout_received.connect(func(amount: int) -> void: payouts.append(amount))
+
+	# Upgrade first so several payouts land close together.
+	simulation.money = simulation.get_upgrade_cost()
+	simulation.upgrade_generator()
+
+	var elapsed := 0.0
+	while payouts.size() < 3 and elapsed < MAX_SECONDS * 2.0:
+		simulation.step(STEP)
+		elapsed += STEP
+
+	_assert_equal(payouts.size() >= 3, true, "at least three payouts are emitted")
+
+	var total := 0
+	for amount in payouts:
+		total += amount
+		_assert_equal(amount, LineBalance.UNIT_START_VALUE * LineBalance.PROCESSOR_MULTIPLIER,
+			"each payout carries the processed unit value")
+
+	_assert_equal(total, simulation.money, "emitted payouts add up to money earned")
 
 
 func _test_upgrade_spends_money_and_increases_rate() -> void:

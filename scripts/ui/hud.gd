@@ -8,8 +8,12 @@ const MONEY_FONT_SIZE := 28
 const BODY_FONT_SIZE := 22
 const MARGIN := 32.0
 const PANEL_WIDTH := 420.0
+const MONEY_PULSE_SCALE := 1.15
+const MONEY_PULSE_UP_TIME := 0.08
+const MONEY_PULSE_DOWN_TIME := 0.25
 
 var _money_label: Label
+var _money_tween: Tween
 var _panel: PanelContainer
 var _level_label: Label
 var _production_label: Label
@@ -46,6 +50,22 @@ func refresh(simulation: ProductionSimulation, generator_selected: bool) -> void
 	_production_label.text = "Production  %.2f/sec" % simulation.get_generator_rate()
 	_upgrade_button.text = "UPGRADE  $%d" % simulation.get_upgrade_cost()
 	_upgrade_button.disabled = not simulation.can_afford_upgrade()
+
+
+func pulse_money() -> void:
+	# Restart from the current state so rapid payouts retrigger the pulse cleanly.
+	if _money_tween and _money_tween.is_valid():
+		_money_tween.kill()
+
+	_money_label.pivot_offset = Vector2(0.0, _money_label.size.y * 0.5)
+
+	_money_tween = create_tween()
+	_money_tween.tween_property(_money_label, "scale", Vector2.ONE * MONEY_PULSE_SCALE, MONEY_PULSE_UP_TIME) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	_money_tween.parallel().tween_property(_money_label, "modulate", LinePalette.PAYOUT_HIGHLIGHT, MONEY_PULSE_UP_TIME)
+	_money_tween.tween_property(_money_label, "scale", Vector2.ONE, MONEY_PULSE_DOWN_TIME) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	_money_tween.parallel().tween_property(_money_label, "modulate", Color.WHITE, MONEY_PULSE_DOWN_TIME)
 
 
 func _build_generator_panel() -> PanelContainer:

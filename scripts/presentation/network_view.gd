@@ -12,12 +12,29 @@ const ARROW_SIZE := 16.0
 const LABEL_WIDTH := 160.0
 const LABEL_FONT_SIZE := 20
 
+const PAYOUT_FONT_SIZE := 30
+const PAYOUT_DURATION := 0.9
+const PAYOUT_RISE := 90.0
+const PAYOUT_SPREAD := 40.0
+const PAYOUT_SLOTS := 3
+const PAYOUT_MAX_ACTIVE := 6
+
+class FloatingPayout:
+	var amount: int
+	var lateral_offset: float
+	var age: float = 0.0
+
+	func _init(payout_amount: int, offset: float) -> void:
+		amount = payout_amount
+		lateral_offset = offset
+
 var simulation: ProductionSimulation
 var generator_selected: bool = false
 
 var _generator_position := Vector2.ZERO
 var _processor_position := Vector2.ZERO
 var _output_position := Vector2.ZERO
+var _payouts: Array[FloatingPayout] = []
 
 
 func _ready() -> void:
@@ -25,8 +42,19 @@ func _ready() -> void:
 	_update_layout()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_advance_payouts(delta)
 	queue_redraw()
+
+
+func show_payout(amount: int) -> void:
+	# Cycle lateral slots so payouts arriving close together do not overlap.
+	var slot := _payouts.size() % PAYOUT_SLOTS
+	var lateral := (float(slot) - float(PAYOUT_SLOTS - 1) * 0.5) * PAYOUT_SPREAD
+	_payouts.append(FloatingPayout.new(amount, lateral))
+
+	if _payouts.size() > PAYOUT_MAX_ACTIVE:
+		_payouts.pop_front()
 
 
 func is_generator_hit(point: Vector2) -> bool:
@@ -55,6 +83,34 @@ func _draw() -> void:
 
 	for unit in simulation.units:
 		_draw_unit(unit)
+
+	for payout in _payouts:
+		_draw_payout(payout)
+
+
+func _advance_payouts(delta: float) -> void:
+	for index in range(_payouts.size() - 1, -1, -1):
+		_payouts[index].age += delta
+		if _payouts[index].age >= PAYOUT_DURATION:
+			_payouts.remove_at(index)
+
+
+func _draw_payout(payout: FloatingPayout) -> void:
+	var progress := clampf(payout.age / PAYOUT_DURATION, 0.0, 1.0)
+	var eased := 1.0 - pow(1.0 - progress, 3.0)
+	var origin := _output_position + Vector2(payout.lateral_offset, -NODE_RADIUS - 24.0)
+	var color := LinePalette.OUTPUT
+	color.a = 1.0 - progress * progress
+
+	draw_string(
+		ThemeDB.fallback_font,
+		origin + Vector2(-LABEL_WIDTH * 0.5, -PAYOUT_RISE * eased),
+		"+$%d" % payout.amount,
+		HORIZONTAL_ALIGNMENT_CENTER,
+		LABEL_WIDTH,
+		PAYOUT_FONT_SIZE,
+		color
+	)
 
 
 func _draw_connection(from: Vector2, to: Vector2) -> void:
