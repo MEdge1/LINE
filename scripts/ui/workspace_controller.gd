@@ -8,6 +8,7 @@ signal state_changed
 signal feedback(message: String, is_error: bool)
 signal invalid_cell(cell: Vector2i)
 signal invalid_connection(from_id: int, to_id: int)
+signal selection_changed(id: int)
 
 enum Mode { IDLE, PLACE, CONNECT, MOVE }
 
@@ -160,6 +161,8 @@ func _handle_mouse_button(event: InputEventMouseButton) -> void:
 
 
 func _press(pointer: int, position: Vector2) -> void:
+	# Any new touch is the player taking control, so an automatic reveal must not fight it.
+	_camera.cancel_reveal()
 	_pointers[pointer] = position
 
 	if _pointers.size() == 1:
@@ -352,6 +355,7 @@ func _try_connect(cell: Vector2i) -> void:
 func _select(id: int) -> void:
 	selected_id = id
 	delete_armed = false
+	selection_changed.emit(id)
 	state_changed.emit()
 
 
@@ -383,5 +387,7 @@ func _connection_message(rejection: NetworkGraph.Rejection) -> String:
 			return "That input is already in use"
 		NetworkGraph.Rejection.WOULD_CREATE_LOOP:
 			return "That connection would create a loop"
+		NetworkGraph.Rejection.BOOSTER_NOT_CONNECTABLE:
+			return "Boosters boost neighbours; they carry no resources"
 		_:
 			return "That node no longer exists"

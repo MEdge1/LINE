@@ -1,28 +1,43 @@
 class_name LineBalance
 extends RefCounted
 
-# Provisional Milestone 1 tuning values. Keep all balance numbers here.
+# Provisional tuning values. Keep all balance numbers here.
 
 const START_MONEY := 120
 
 const GENERATOR_BASE_RATE := 1.0
 const GENERATOR_RATE_PER_LEVEL := 0.25
-# Cost to go from level N to N + 1 is GENERATOR_UPGRADE_COST_PER_LEVEL * N.
 const GENERATOR_UPGRADE_COST_PER_LEVEL := 10
 # Temporary prototype safeguard. Upgrades stop here.
 const GENERATOR_MAX_LEVEL := 15
 
 const UNIT_START_VALUE := 1
 const PROCESSOR_MULTIPLIER := 2
+# Each complexity level of incoming resources divides a Processor's speed by (1 + this * complexity).
+# Value is never affected; see ComplexityModel.
+const COMPLEXITY_COST_PER_LEVEL := 0.10
 
-# Seconds a unit takes to travel each connection.
+# Seconds a resource batch takes to cross a connection.
 const TRAVEL_DURATION := 1.25
+# Batches of the same value entering one connection within this window share a batch.
+const MERGE_WINDOW_SECONDS := 0.25
 
-# Milestone 2 temporary drain rule: a backlog held at a node with no downstream
-# connection is released DRAIN_BATCH_SIZE units every DRAIN_INTERVAL seconds once a
-# connection exists. Milestone 3 replaces this with throughput limits and buffers.
-const DRAIN_INTERVAL := 0.5
-const DRAIN_BATCH_SIZE := 8
+# Resource quantity each node's queue can hold. Measured in quantity, never in batches or particles.
+const BUFFER_CAPACITY := 25
+# Processing and routing budgets accumulate at most this many seconds of capacity while idle.
+const BURST_SECONDS := 1.0
 
-# Fraction of a node's construction cost returned when it is deleted.
+# Multiplier on an eligible node's capacity while it is orthogonally adjacent to a Booster.
+const BOOSTER_BONUS := 0.25
+
+# A node is SATURATED when it processes at or above this share of its capacity.
+const BOTTLENECK_UTILIZATION := 0.9
+# A saturated node is a BOTTLENECK when its queue holds at least this share of its buffer.
+const BOTTLENECK_QUEUE_FRACTION := 0.25
+
+# Telemetry rates are averaged over this window, built from fixed-size buckets.
+const RATE_WINDOW_SECONDS := 4.0
+const RATE_BUCKET_SECONDS := 0.25
+
 const DELETE_REFUND_RATIO := 1.0
+const NODE_HIT_RADIUS := 72.0

@@ -3,7 +3,7 @@ extends SceneTree
 # Run with: godot --headless --path . --script res://tests/test_production_simulation.gd
 
 const STEP := 0.05
-const MAX_SECONDS := 20.0
+const MAX_SECONDS := 60.0
 
 var _failures := 0
 
@@ -12,12 +12,12 @@ func _init() -> void:
 	_test_generator_to_output_pays_unprocessed_value()
 	_test_processor_doubles_value_before_output()
 	_test_chained_processors_compound()
-	_test_unconnected_generator_produces_nothing()
-	_test_held_production_drains_once_connected()
+	_test_unconnected_generator_fills_its_buffer_and_pays_nothing()
+	_test_disconnected_processor_backpressures_and_resumes()
 	_test_payouts_sum_to_money_earned()
 	_test_upgrade_changes_rate_and_costs_currency()
 	_test_upgrade_stops_at_max_level_without_spending()
-	_test_dropping_node_state_removes_its_batches()
+	_test_dropping_node_state_records_loss()
 
 	if _failures == 0:
 		print("All production simulation tests passed.")
@@ -53,8 +53,9 @@ func _chain(graph: NetworkGraph, types: Array) -> Array:
 	return ids
 
 
-func _held_count(simulation: ProductionSimulation) -> int:
-	return simulation.in_flight.size() + simulation.get_waiting_batch_count()
+func _conservation_holds(simulation: ProductionSimulation) -> bool:
+	var accounted := simulation.paid_units.add(simulation.get_held_units()).add(simulation.lost_units)
+	return accounted.compare(simulation.produced_units) == 0
 
 
 func _run_until_money(simulation: ProductionSimulation, target: int) -> void:
@@ -100,46 +101,46 @@ func _test_chained_processors_compound() -> void:
 	_assert_money(simulation, 4, "two processors compound the value to 4")
 
 
-func _test_unconnected_generator_produces_nothing() -> void:
+func _test_unconnected_generator_fills_its_buffer_and_pays_nothing() -> void:
 	var graph := NetworkGraph.new()
 	graph.add_node(NodeDefinitions.Type.GENERATOR)
 	var simulation := _new_simulation(graph)
 
-	for _i in range(200):
+	for _i in range(2000):
 		simulation.step(STEP)
 
-	_assert_equal(_held_count(simulation), 0, "generator without a connection creates no resources")
-	_assert_money(simulation, 0, "generator without a connection earns nothing")
+	_assert_equal(simulation.get_waiting_total(1).compare(LargeNumber.from_int(LineBalance.BUFFER_CAPACITY)), 0,
+		"an unconnected generator fills its buffer and stops")
+	_assert_money(simulation, 0, "an unconnected generator earns nothing")
+	_assert_equal(_conservation_holds(simulation), true, "buffered production stays counted as held")
 
 
-# Held production must not stay stuck once a route exists, and draining must not release only one unit.
-# The conservation ledger proves nothing is lost along the way.
-func _test_held_production_drains_once_connected() -> void:
+# A processor with no output holds its buffer full, which pauses the generator upstream.
+# Connecting the output drains the backlog without loss and pays the processed value.
+func _test_disconnected_processor_backpressures_and_resumes() -> void:
 	var graph := NetworkGraph.new()
 	var ids := _chain(graph, [NodeDefinitions.Type.GENERATOR, NodeDefinitions.Type.PROCESSOR])
 	var simulation := _new_simulation(graph)
 
-	for _i in range(200):
+	for _i in range(1200):
 		simulation.step(STEP)
-	_assert_equal(simulation.money.is_zero(), true, "generator -> processor with no output earns nothing")
-	_assert_equal(simulation.paid_units.is_zero(), true, "no units are paid without an output")
-	_assert_equal(simulation.get_held_units().compare(simulation.produced_units), 0, "all produced units are held")
-
-	var output_id := graph.add_node(NodeDefinitions.Type.OUTPUT)
-	_assert_equal(graph.connect_nodes(ids[1], output_id), NetworkGraph.Rejection.NONE, "processor connects to output")
-
+	var produced_when_full := simulation.produced_units.to_text()
+	_assert_equal(simulation.get_waiting_total(ids[1]).compare(LargeNumber.from_int(LineBalance.BUFFER_CAPACITY)) <= 0, true,
+		"the processor's queue never exceeds its buffer")
 	for _i in range(400):
 		simulation.step(STEP)
-	_assert_equal(simulation.paid_units.compare(LargeNumber.from_int(8)) > 0, true,
-		"draining releases more than one unit at a time")
-	_assert_equal(simulation.money.compare(simulation.paid_units.multiply(LargeNumber.from_int(LineBalance.PROCESSOR_MULTIPLIER))), 0,
-		"each paid unit is worth the processed value")
-	_assert_equal(_conservation_holds(simulation), true, "produced = paid + held + lost")
+	_assert_equal(simulation.produced_units.to_text(), produced_when_full,
+		"back-pressure pauses generator production; nothing is produced while blocked")
+	_assert_equal(_conservation_holds(simulation), true, "back-pressure loses nothing")
 
+	var output := graph.add_node(NodeDefinitions.Type.OUTPUT)
+	graph.connect_nodes(ids[1], output)
+	for _i in range(800):
+		simulation.step(STEP)
 
-func _conservation_holds(simulation: ProductionSimulation) -> bool:
-	var accounted := simulation.paid_units.add(simulation.get_held_units()).add(simulation.lost_units)
-	return accounted.compare(simulation.produced_units) == 0
+	_assert_equal(simulation.money.is_zero(), false, "the backlog pays once connected")
+	_assert_equal(simulation.lost_units.is_zero(), true, "draining loses nothing")
+	_assert_equal(_conservation_holds(simulation), true, "draining conserves every unit")
 
 
 func _test_payouts_sum_to_money_earned() -> void:
@@ -148,13 +149,13 @@ func _test_payouts_sum_to_money_earned() -> void:
 	var simulation := _new_simulation(graph)
 
 	var payouts: Array[String] = []
-	simulation.payout_received.connect(func(amount: LargeNumber, _output_id: int) -> void: payouts.append(amount.to_text()))
+	simulation.payout_received.connect(func(amount: LargeNumber, _output_id: int, _complexity: int) -> void: payouts.append(amount.to_text()))
 
 	_run_until_money(simulation, 6)
 
 	var total := LargeNumber.from_int(0)
 	for text in payouts:
-		total = total.add(LargeNumber.from_int(int(text)))
+		total = total.add(LargeNumber.from_text(text))
 
 	_assert_equal(payouts.size() >= 3, true, "several payouts are emitted")
 	_assert_equal(total.compare(simulation.money), 0, "emitted payouts add up to money earned")
@@ -196,15 +197,17 @@ func _test_upgrade_stops_at_max_level_without_spending() -> void:
 		"level 15 generator reports 4.50/sec")
 
 
-func _test_dropping_node_state_removes_its_batches() -> void:
+func _test_dropping_node_state_records_loss() -> void:
 	var graph := NetworkGraph.new()
 	var ids := _chain(graph, [NodeDefinitions.Type.GENERATOR, NodeDefinitions.Type.OUTPUT])
 	var simulation := _new_simulation(graph)
 
-	for _i in range(30):
+	for _i in range(60):
 		simulation.step(STEP)
 	_assert_equal(simulation.in_flight.size() > 0, true, "batches are in flight before deletion")
 
 	simulation.drop_node_state(ids[0])
 
 	_assert_equal(simulation.in_flight.size(), 0, "batches tied to a deleted node are removed")
+	_assert_equal(simulation.lost_units.is_zero(), false, "deleted resources are recorded as lost")
+	_assert_equal(_conservation_holds(simulation), true, "deletion keeps the ledger balanced")

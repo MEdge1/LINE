@@ -99,6 +99,37 @@ func to_text() -> String:
 	return text
 
 
+static func min_of(first: LargeNumber, second: LargeNumber) -> LargeNumber:
+	return first if first.compare(second) <= 0 else second
+
+
+static func from_text(digits: String) -> LargeNumber:
+	var result := LargeNumber.from_int(0)
+	var ten := LargeNumber.from_int(10)
+	for digit in digits:
+		result = result.multiply(ten).add(LargeNumber.from_int(int(digit)))
+	return result
+
+
+# Lossy. Used only for telemetry and display rates, never for authoritative values.
+func to_float() -> float:
+	var value := 0.0
+	for index in range(_limbs.size() - 1, -1, -1):
+		value = value * LIMB_BASE + float(_limbs[index])
+	return value
+
+
+# Only for values known to be small, such as buffer space and per-step budgets.
+# Anything larger than 64 bits clamps to the maximum.
+func to_int_clamped() -> int:
+	if _limbs.size() > 2:
+		return 9223372036854775807
+	var value := _limbs[0]
+	if _limbs.size() == 2:
+		value += _limbs[1] * LIMB_BASE
+	return value
+
+
 func _limb(index: int) -> int:
 	return _limbs[index] if index < _limbs.size() else 0
 

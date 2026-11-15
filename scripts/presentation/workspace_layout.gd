@@ -6,6 +6,7 @@ extends RefCounted
 const COLUMNS := 5
 const ROWS := 9
 const CELL_SIZE := 150.0
+const NEIGHBOR_OFFSETS := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
 
 var _cell_of: Dictionary = {}
 var _node_at: Dictionary = {}
@@ -43,6 +44,17 @@ func get_node_cell(id: int) -> Vector2i:
 
 func get_node_at(cell: Vector2i) -> int:
 	return _node_at.get(cell, 0)
+
+
+# Ids of nodes in the four orthogonal neighbouring cells.
+func get_neighbor_ids(id: int) -> Array:
+	var ids: Array = []
+	var cell := get_node_cell(id)
+	for offset in NEIGHBOR_OFFSETS:
+		var other := get_node_at(cell + offset)
+		if other != 0:
+			ids.append(other)
+	return ids
 
 
 func place(id: int, cell: Vector2i) -> void:

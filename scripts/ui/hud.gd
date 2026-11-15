@@ -1,30 +1,32 @@
 class_name Hud
 extends CanvasLayer
 
-# Money display, mode banner, feedback toast, and the build and inspect controls.
+# Money, network telemetry, mode banner, feedback toast, and the build and inspect controls.
 
 signal placement_requested(type: int)
 signal connect_requested
 signal move_requested
 signal upgrade_requested
 signal delete_requested
-signal cancel_requested
 signal disconnect_requested(from_id: int, to_id: int)
+signal cancel_requested
 
 const TITLE_FONT_SIZE := 32
 const MONEY_FONT_SIZE := 28
+const TELEMETRY_FONT_SIZE := 18
 const BODY_FONT_SIZE := 20
 const MARGIN := 24.0
-const TOOLBAR_HEIGHT := 96.0
-const BANNER_TOP := 150.0
-const TOAST_TOP := 200.0
-const MONEY_PULSE_SCALE := 1.15
+const HEADER_HEIGHT := 140.0
+const TOOLBAR_HEIGHT := 150.0
+const BANNER_TOP := 190.0
+const TOAST_TOP := 240.0
 const MONEY_PULSE_UP_TIME := 0.08
 const MONEY_PULSE_DOWN_TIME := 0.25
 const TOAST_HOLD_TIME := 1.6
 const TOAST_FADE_TIME := 0.4
 
 var _money_label: Label
+var _telemetry_label: Label
 var _money_tween: Tween
 var _banner: PanelContainer
 var _banner_label: Label
@@ -40,6 +42,13 @@ func _ready() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(root)
 
+	var backdrop := ColorRect.new()
+	backdrop.color = Color(LinePalette.BACKGROUND, 0.88)
+	backdrop.anchor_right = 1.0
+	backdrop.offset_bottom = HEADER_HEIGHT
+	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(backdrop)
+
 	var header := VBoxContainer.new()
 	header.position = Vector2(MARGIN, MARGIN)
 	header.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -47,6 +56,8 @@ func _ready() -> void:
 	header.add_child(_make_label("LINE", TITLE_FONT_SIZE))
 	_money_label = _make_label("$0", MONEY_FONT_SIZE)
 	header.add_child(_money_label)
+	_telemetry_label = _make_label("", TELEMETRY_FONT_SIZE)
+	header.add_child(_telemetry_label)
 
 	_banner = _build_banner()
 	root.add_child(_banner)
@@ -78,6 +89,7 @@ func _ready() -> void:
 
 func refresh(manager: NetworkManager, mode: int, placement_type: int, selected_id: int, delete_armed: bool) -> void:
 	_money_label.text = NumberFormat.money(manager.simulation.money)
+	_telemetry_label.text = _telemetry_text(manager.get_network_summary())
 	_toolbar.refresh(manager, placement_type if mode == WorkspaceController.Mode.PLACE else -1)
 	_node_panel.refresh(manager, selected_id, delete_armed)
 	_banner.visible = mode != WorkspaceController.Mode.IDLE
@@ -96,20 +108,45 @@ func show_feedback(message: String, is_error: bool) -> void:
 	_toast_tween.tween_property(_toast, "modulate:a", 0.0, TOAST_FADE_TIME)
 
 
-func pulse_money() -> void:
+func pulse_money(complexity: int = 0) -> void:
 	# Restart from the current state so rapid payouts retrigger the pulse cleanly.
 	if _money_tween and _money_tween.is_valid():
 		_money_tween.kill()
 
 	_money_label.pivot_offset = Vector2(0.0, _money_label.size.y * 0.5)
+	var pulse := Vector2.ONE * ComplexityStyle.money_pulse_scale(complexity)
 
 	_money_tween = create_tween()
-	_money_tween.tween_property(_money_label, "scale", Vector2.ONE * MONEY_PULSE_SCALE, MONEY_PULSE_UP_TIME) \
+	_money_tween.tween_property(_money_label, "scale", pulse, MONEY_PULSE_UP_TIME) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 	_money_tween.parallel().tween_property(_money_label, "modulate", LinePalette.PAYOUT_HIGHLIGHT, MONEY_PULSE_UP_TIME)
 	_money_tween.tween_property(_money_label, "scale", Vector2.ONE, MONEY_PULSE_DOWN_TIME) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	_money_tween.parallel().tween_property(_money_label, "modulate", Color.WHITE, MONEY_PULSE_DOWN_TIME)
+
+
+# The screen band that no panel covers: below the header or banner and above the inspector or toolbar.
+func workspace_band(viewport_size: Vector2) -> Rect2:
+	var top := HEADER_HEIGHT
+	if _banner.visible:
+		top = _banner.position.y + _banner.size.y
+
+	var toolbar_top := viewport_size.y - MARGIN - _height_of(_toolbar)
+	var bottom := toolbar_top
+	if _node_panel.visible:
+		bottom = viewport_size.y - (TOOLBAR_HEIGHT + MARGIN * 2.0) - _height_of(_node_panel)
+	return Rect2(0.0, top, viewport_size.x, maxf(bottom - top, 0.0))
+
+
+func _telemetry_text(summary: Dictionary) -> String:
+	var revenue: float = maxf(summary["revenue_rate"], 0.0)
+	var revenue_text := "∞" if is_inf(revenue) else NumberFormat.compact(LargeNumber.from_text("%.0f" % revenue))
+	return "Produced %.1f/s · Revenue %s/s · Queued %s · Bottlenecks %d" % [
+		summary["produced_rate"],
+		revenue_text,
+		NumberFormat.compact(summary["waiting"]),
+		summary["bottlenecks"],
+	]
 
 
 func _build_banner() -> PanelContainer:
@@ -171,3 +208,8 @@ func _make_label(text: String, font_size: int) -> Label:
 	label.add_theme_font_size_override("font_size", font_size)
 	label.add_theme_color_override("font_color", LinePalette.TEXT)
 	return label
+
+
+# Bottom-anchored panels size themselves from content, so use whichever is larger right now.
+func _height_of(control: Control) -> float:
+	return maxf(control.size.y, control.get_combined_minimum_size().y)

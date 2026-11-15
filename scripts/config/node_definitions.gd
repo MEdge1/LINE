@@ -1,14 +1,19 @@
 class_name NodeDefinitions
 extends RefCounted
 
-# Node types and their connection limits. Indexed by Type. Costs are provisional tuning values.
+# Node types, construction costs, connection ports, and processing capacity. Costs and
+# capacities are provisional tuning values. Capacity is resource units per second.
+# Generator output comes from its level (see ProductionSimulation.get_generator_rate).
 
-enum Type { GENERATOR, PROCESSOR, OUTPUT }
+enum Type { GENERATOR, PROCESSOR, OUTPUT, SPLITTER, MERGER, BOOSTER }
 
 const TYPE_DATA := [
-	{"name": "GENERATOR", "cost": 25, "max_inputs": 0, "max_outputs": 1},
-	{"name": "PROCESSOR", "cost": 50, "max_inputs": 1, "max_outputs": 1},
-	{"name": "OUTPUT", "cost": 25, "max_inputs": 1, "max_outputs": 0},
+	{"name": "GENERATOR", "cost": 25, "max_inputs": 0, "max_outputs": 1, "capacity": 0.0, "boostable": false},
+	{"name": "PROCESSOR", "cost": 50, "max_inputs": 1, "max_outputs": 1, "capacity": 4.0, "boostable": true},
+	{"name": "OUTPUT", "cost": 25, "max_inputs": 1, "max_outputs": 0, "capacity": 6.0, "boostable": false},
+	{"name": "SPLITTER", "cost": 40, "max_inputs": 1, "max_outputs": 2, "capacity": 8.0, "boostable": false},
+	{"name": "MERGER", "cost": 40, "max_inputs": 2, "max_outputs": 1, "capacity": 8.0, "boostable": false},
+	{"name": "BOOSTER", "cost": 30, "max_inputs": 0, "max_outputs": 0, "capacity": 0.0, "boostable": false},
 ]
 
 
@@ -26,3 +31,11 @@ static func get_max_inputs(type: int) -> int:
 
 static func get_max_outputs(type: int) -> int:
 	return int(TYPE_DATA[type]["max_outputs"])
+
+
+static func get_capacity(type: int) -> float:
+	return float(TYPE_DATA[type]["capacity"])
+
+
+static func is_boostable(type: int) -> bool:
+	return bool(TYPE_DATA[type]["boostable"])

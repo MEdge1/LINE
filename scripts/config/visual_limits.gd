@@ -16,7 +16,7 @@ const PARTICLE_STAGGER := 0.04
 const PHASE_SPREAD := 0.05
 # Visual trail behind each particle: spacing (fraction of the connection) and opacity per ghost.
 const TRAIL_OFFSET := 0.035
-const TRAIL_ALPHAS := [0.35, 0.15]
+const TRAIL_ALPHAS := [0.35, 0.2, 0.1]
 const WAITING_DOTS_PER_NODE := 4
 const PAYOUT_INDICATORS := 6
 # Representative particles on a connection at which its glow reaches full strength.

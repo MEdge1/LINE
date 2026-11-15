@@ -1,26 +1,31 @@
 class_name BuildToolbar
 extends PanelContainer
 
-# Touch-friendly node picker. Shows cost and whether the player can currently afford each node.
+# Touch-friendly node picker in two rows. Shows each node's cost and whether it is affordable.
 
 signal placement_requested(type: int)
 
-const BUTTON_HEIGHT := 64.0
-const FONT_SIZE := 20
+const BUTTON_HEIGHT := 60.0
+const FONT_SIZE := 18
 const UNAFFORDABLE_ALPHA := 0.4
 const TYPES := [
 	NodeDefinitions.Type.GENERATOR,
 	NodeDefinitions.Type.PROCESSOR,
 	NodeDefinitions.Type.OUTPUT,
+	NodeDefinitions.Type.SPLITTER,
+	NodeDefinitions.Type.MERGER,
+	NodeDefinitions.Type.BOOSTER,
 ]
 
 var _buttons: Dictionary = {}
 
 
 func _ready() -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 10)
-	add_child(row)
+	var grid := GridContainer.new()
+	grid.columns = 3
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 8)
+	add_child(grid)
 
 	for type in TYPES:
 		var button := Button.new()
@@ -29,7 +34,7 @@ func _ready() -> void:
 		button.add_theme_font_size_override("font_size", FONT_SIZE)
 		button.add_theme_color_override("font_color", LinePalette.for_node_type(type))
 		button.pressed.connect(placement_requested.emit.bind(type))
-		row.add_child(button)
+		grid.add_child(button)
 		_buttons[type] = button
 
 

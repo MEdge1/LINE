@@ -9,6 +9,9 @@ var _camera := WorkspaceCamera.new()
 var _view: NetworkView
 var _controller: WorkspaceController
 var _hud: Hud
+var _ui_timer := 0.0
+
+const UI_REFRESH_SECONDS := 0.1
 
 
 func _ready() -> void:
@@ -34,6 +37,7 @@ func _ready() -> void:
 	get_viewport().size_changed.connect(func() -> void: _camera.set_viewport_size(get_viewport_rect().size))
 
 	_controller.state_changed.connect(_refresh_ui)
+	_controller.selection_changed.connect(_on_selection_changed)
 	_controller.feedback.connect(_hud.show_feedback)
 	_controller.invalid_cell.connect(_view.flash_cell)
 	_controller.invalid_connection.connect(_view.flash_connection)
@@ -51,7 +55,12 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_manager.step(delta)
-	_refresh_ui()
+	_camera.advance(delta)
+	# Text and telemetry do not need every frame. Player actions still refresh immediately.
+	_ui_timer += delta
+	if _ui_timer >= UI_REFRESH_SECONDS:
+		_ui_timer = 0.0
+		_refresh_ui()
 
 
 func _refresh_ui() -> void:
@@ -67,6 +76,19 @@ func _refresh_ui() -> void:
 	_hud.refresh(_manager, _controller.mode, _controller.placement_type, _controller.selected_id, _controller.delete_armed)
 
 
-func _on_payout_received(amount: LargeNumber, output_id: int) -> void:
-	_view.show_payout(amount, output_id)
-	_hud.pulse_money()
+func _on_selection_changed(id: int) -> void:
+	_refresh_ui()
+	if id == 0:
+		return
+	# The inspector's height is only known after layout, so the correction waits two frames.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if _controller.selected_id != id or not _manager.graph.has_node(id):
+		return
+	var world := _manager.layout.get_cell_center(_manager.layout.get_node_cell(id))
+	_camera.reveal_node(world, _hud.workspace_band(get_viewport_rect().size))
+
+
+func _on_payout_received(amount: LargeNumber, output_id: int, complexity: int) -> void:
+	_view.show_payout(amount, output_id, complexity)
+	_hud.pulse_money(complexity)

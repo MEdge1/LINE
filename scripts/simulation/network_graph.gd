@@ -7,6 +7,7 @@ enum Rejection {
 	NONE,
 	MISSING_NODE,
 	SELF_CONNECTION,
+	BOOSTER_NOT_CONNECTABLE,
 	DUPLICATE,
 	SOURCE_CANNOT_SEND,
 	SOURCE_OUTPUT_FULL,
@@ -20,6 +21,8 @@ class NetworkNode:
 	var id: int
 	var type: int
 	var level: int = 1
+	# Set by NetworkManager from grid adjacency to Boosters. Never set by the graph itself.
+	var boosted: bool = false
 
 	func _init(node_id: int, node_type: int) -> void:
 		id = node_id
@@ -93,6 +96,8 @@ func validate_connection(from_id: int, to_id: int) -> Rejection:
 		return Rejection.MISSING_NODE
 	if from_id == to_id:
 		return Rejection.SELF_CONNECTION
+	if get_node(from_id).type == NodeDefinitions.Type.BOOSTER or get_node(to_id).type == NodeDefinitions.Type.BOOSTER:
+		return Rejection.BOOSTER_NOT_CONNECTABLE
 	if get_outgoing(from_id).has(to_id):
 		return Rejection.DUPLICATE
 

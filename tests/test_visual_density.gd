@@ -12,6 +12,9 @@ func _init() -> void:
 	_test_larger_quantities_show_at_least_as_much_activity()
 	_test_visual_density_does_not_change_totals()
 	_test_repeated_frames_do_not_accumulate_visual_state()
+	_test_complexity_colour_is_deterministic_and_tiered()
+	_test_complexity_effects_are_bounded()
+	_test_high_complexity_particles_stay_capped()
 
 	if _failures == 0:
 		print("All visual density tests passed.")
@@ -149,7 +152,7 @@ func _test_repeated_frames_do_not_accumulate_visual_state() -> void:
 	var first_size: int = view.plan_particles().size()
 
 	for _i in range(1000):
-		view.show_payout(LargeNumber.from_int(2), parts[3])
+		view.show_payout(LargeNumber.from_int(2), parts[3], 0)
 		view.flash_cell(Vector2i(0, 0))
 		view._advance_effects(1.0 / 60.0)
 	for _i in range(60):
@@ -158,4 +161,45 @@ func _test_repeated_frames_do_not_accumulate_visual_state() -> void:
 	_assert_equal(view.plan_particles().size(), first_size, "repeated frames plan the same bounded particles")
 	_assert_equal(view._payouts.size() <= VisualLimits.PAYOUT_INDICATORS, true, "payout indicators stay capped")
 	_assert_equal(view._cell_flashes.is_empty(), true, "expired flashes are released")
+	view.free()
+
+
+func _test_complexity_colour_is_deterministic_and_tiered() -> void:
+	_assert_equal(ComplexityStyle.color(4) == ComplexityStyle.color(4), true, "the same complexity always gets the same colour")
+	_assert_equal(ComplexityStyle.color(0) == ComplexityStyle.color(15), false, "raw and extreme resources look distinct")
+	_assert_equal(ComplexityStyle.tier_name(0), "Raw", "complexity 0 is the Raw tier")
+	_assert_equal(ComplexityStyle.tier_name(7), "Advanced", "complexity 7 falls in the Advanced tier")
+	_assert_equal(ComplexityStyle.tier_name(40), "Extreme", "very high complexity stays in the Extreme tier")
+
+
+func _test_complexity_effects_are_bounded() -> void:
+	var valid := true
+	for complexity in range(0, 200):
+		var glow := ComplexityStyle.glow_alpha(complexity)
+		var scale := ComplexityStyle.radius_scale(complexity)
+		var ghosts := ComplexityStyle.trail_ghosts(complexity)
+		if glow < ComplexityVisuals.GLOW_ALPHA_MIN or glow > ComplexityVisuals.GLOW_ALPHA_MAX:
+			valid = false
+		if scale < 1.0 or scale > ComplexityVisuals.RADIUS_SCALE_MAX:
+			valid = false
+		if ghosts < 1 or ghosts > mini(ComplexityVisuals.MAX_TRAIL_GHOSTS, VisualLimits.TRAIL_ALPHAS.size()):
+			valid = false
+	_assert_equal(valid, true, "glow, size, and trail stay within their bounds at every complexity")
+	_assert_equal(ComplexityStyle.radius_scale(1000), ComplexityStyle.radius_scale(ComplexityVisuals.EFFECT_CAP),
+		"visual effects stop growing at the cap")
+
+
+func _test_high_complexity_particles_stay_capped() -> void:
+	var parts := _view_with_connection()
+	var view: NetworkView = parts[0]
+	var simulation: ProductionSimulation = parts[1]
+	for _i in range(20):
+		var batch := _batch(LargeNumber.from_int(1000), LargeNumber.from_int(1), parts[2], parts[3])
+		batch.complexity = 15
+		simulation.in_flight.append(batch)
+
+	var plan := view.plan_particles()
+	_assert_equal(plan.size(), VisualLimits.PARTICLES_PER_CONNECTION, "high-complexity batches still obey the connection cap")
+	_assert_equal(plan[0]["color"] == ComplexityStyle.color(15), true, "particles take their colour from their complexity")
+	_assert_equal(simulation.get_held_units().to_text(), "20000", "visual planning leaves the authoritative quantity unchanged")
 	view.free()

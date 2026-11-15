@@ -1,10 +1,11 @@
 class_name NetworkManager
 extends RefCounted
 
-# Single entry point for network changes. Coordinates the graph, grid layout, and
-# production simulation so each player action updates all three consistently.
+# Single entry point for network changes. Keeps the graph, grid layout, and production simulation
+# consistent. Booster influence is derived from grid adjacency after every layout change, so a
+# moved or deleted Booster or Processor never leaves a stale bonus behind.
 
-signal payout_received(amount: LargeNumber, output_id: int)
+signal payout_received(amount: LargeNumber, output_id: int, complexity: int)
 
 enum PlacementResult { OK, OUT_OF_BOUNDS, CELL_OCCUPIED, INSUFFICIENT_FUNDS, UNKNOWN_NODE }
 
@@ -44,6 +45,7 @@ func construct(type: int, cell: Vector2i) -> PlacementResult:
 
 	var id := graph.add_node(type)
 	layout.place(id, cell)
+	_refresh_boosts()
 	return PlacementResult.OK
 
 
@@ -58,6 +60,7 @@ func move_node(id: int, cell: Vector2i) -> PlacementResult:
 		return PlacementResult.CELL_OCCUPIED
 
 	layout.move(id, cell)
+	_refresh_boosts()
 	return PlacementResult.OK
 
 
@@ -80,6 +83,7 @@ func delete_node(id: int) -> LargeNumber:
 	simulation.drop_node_state(id)
 	graph.remove_node(id)
 	layout.remove(id)
+	_refresh_boosts()
 	simulation.add_money(LargeNumber.from_int(refund))
 	return LargeNumber.from_int(refund)
 
@@ -94,3 +98,44 @@ func is_at_max_level(id: int) -> bool:
 
 func upgrade_node(id: int) -> bool:
 	return simulation.upgrade_generator(id)
+
+
+# Eligible Processors orthogonally adjacent to a Booster. Empty for any other node.
+func get_boost_targets(booster_id: int) -> Array:
+	var targets: Array = []
+	if not graph.has_node(booster_id) or graph.get_node(booster_id).type != NodeDefinitions.Type.BOOSTER:
+		return targets
+	for neighbour in layout.get_neighbor_ids(booster_id):
+		if NodeDefinitions.is_boostable(graph.get_node(neighbour).type):
+			targets.append(neighbour)
+	return targets
+
+
+func get_network_summary() -> Dictionary:
+	var produced := 0.0
+	var waiting := LargeNumber.from_int(0)
+	var bottlenecks := 0
+	for id in graph.get_node_ids():
+		if graph.get_node(id).type == NodeDefinitions.Type.GENERATOR:
+			produced += simulation.telemetry.produced_rate(id)
+		waiting = waiting.add(simulation.get_waiting_total(id))
+		if simulation.get_status(id) == ProductionSimulation.Status.BOTTLENECK:
+			bottlenecks += 1
+	return {
+		"produced_rate": produced,
+		"revenue_rate": simulation.telemetry.network_payout_rate(),
+		"waiting": waiting,
+		"bottlenecks": bottlenecks,
+	}
+
+
+# Recomputes the boosted flag on every node from the current grid. Boosters do not stack:
+# a Processor either receives the bonus or it does not.
+func _refresh_boosts() -> void:
+	for id in graph.get_node_ids():
+		graph.get_node(id).boosted = false
+	for id in graph.get_node_ids():
+		if graph.get_node(id).type != NodeDefinitions.Type.BOOSTER:
+			continue
+		for target in get_boost_targets(id):
+			graph.get_node(target).boosted = true

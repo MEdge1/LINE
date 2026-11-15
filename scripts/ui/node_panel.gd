@@ -1,8 +1,8 @@
 class_name NodePanel
 extends PanelContainer
 
-# Inspector for the selected node. Shows type-specific stats, every connection with its
-# own DISCONNECT action, and the node's other actions.
+# Inspector for the selected node. Shows type-specific measurements, every connection with its own
+# DISCONNECT action, and the node's other actions.
 
 signal upgrade_requested
 signal connect_requested
@@ -28,9 +28,7 @@ func _ready() -> void:
 	content.add_theme_constant_override("separation", 12)
 	add_child(content)
 
-	_info_label = Label.new()
-	_info_label.add_theme_font_size_override("font_size", FONT_SIZE)
-	_info_label.add_theme_color_override("font_color", LinePalette.TEXT)
+	_info_label = _make_label("")
 	content.add_child(_info_label)
 
 	_connections_box = VBoxContainer.new()
@@ -81,8 +79,8 @@ func _refresh_connections(manager: NetworkManager, selected_id: int) -> void:
 	_shown_connections = signature
 
 	for child in _connections_box.get_children():
-		child.queue_free()
 		_connections_box.remove_child(child)
+		child.queue_free()
 
 	if outgoing.is_empty() and incoming.is_empty():
 		_connections_box.add_child(_make_label("No connections. Drag from the handle or use CONNECT."))
@@ -93,7 +91,7 @@ func _refresh_connections(manager: NetworkManager, selected_id: int) -> void:
 		_add_connection_row(manager, "← %s" % _node_label(manager, from_id), from_id, selected_id)
 
 
-func _add_connection_row(manager: NetworkManager, text: String, from_id: int, to_id: int) -> void:
+func _add_connection_row(_manager: NetworkManager, text: String, from_id: int, to_id: int) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
 	_connections_box.add_child(row)
@@ -133,28 +131,72 @@ func _make_action(text: String, parent: Control) -> Button:
 
 
 func _describe(manager: NetworkManager, node: NetworkGraph.NetworkNode) -> String:
+	var simulation := manager.simulation
 	var lines: Array[String] = [NodeDefinitions.get_display_name(node.type)]
 	var outputs := manager.graph.get_outgoing(node.id).size()
 	var inputs := manager.graph.get_incoming(node.id).size()
 
-	if node.type == NodeDefinitions.Type.GENERATOR:
-		var level_line := "Level %d" % node.level
-		if manager.is_at_max_level(node.id):
-			level_line += "  ·  MAX LEVEL"
-		lines.append(level_line)
-		lines.append("Production %.2f/sec" % manager.simulation.get_generator_rate(node.id))
-		lines.append("Connections %d/%d" % [outputs, NodeDefinitions.get_max_outputs(node.type)])
-	elif node.type == NodeDefinitions.Type.PROCESSOR:
-		lines.append("Multiplier ×%d" % LineBalance.PROCESSOR_MULTIPLIER)
-		lines.append("Input %d/%d   Output %d/%d" % [
-			inputs, NodeDefinitions.get_max_inputs(node.type),
-			outputs, NodeDefinitions.get_max_outputs(node.type),
-		])
-		var waiting := manager.simulation.get_waiting_total(node.id)
-		if not waiting.is_zero():
-			lines.append("Waiting %s" % NumberFormat.compact(waiting))
-	else:
-		lines.append("Input %d/%d" % [inputs, NodeDefinitions.get_max_inputs(node.type)])
-		lines.append("Revenue %s" % NumberFormat.money(manager.simulation.get_revenue(node.id)))
+	match node.type:
+		NodeDefinitions.Type.GENERATOR:
+			var level_line := "Level %d" % node.level
+			if manager.is_at_max_level(node.id):
+				level_line += "  ·  MAX LEVEL"
+			lines.append(level_line)
+			lines.append("Production %.2f/sec  (measured %s/sec)" % [simulation.get_generator_rate(node.id), _rate(simulation.telemetry.produced_rate(node.id))])
+			lines.append("Connections %d/%d" % [outputs, NodeDefinitions.get_max_outputs(node.type)])
+			lines.append("Status %s" % _status_text(simulation.get_status(node.id)))
+		NodeDefinitions.Type.PROCESSOR:
+			lines.append("Multiplier ×%d  ·  Incoming complexity %d" % [LineBalance.PROCESSOR_MULTIPLIER, simulation.get_incoming_complexity(node.id)])
+			var base := NodeDefinitions.get_capacity(node.type)
+			lines.append("Base %s/sec%s" % [_rate(base), "  ·  booster +%d%%" % roundi(LineBalance.BOOSTER_BONUS * 100.0) if node.boosted else ""])
+			lines.append("Complexity ×%.2f  ·  Effective %s/sec" % [ComplexityModel.processing_modifier(simulation.get_incoming_complexity(node.id)), _rate(simulation.get_effective_capacity(node.id))])
+			lines.append("Input %s/sec  ·  Utilization %d%%" % [_rate(simulation.telemetry.arrival_rate(node.id)), roundi(simulation.get_utilization(node.id) * 100.0)])
+			lines.append("Queue %s/%d  ·  %s" % [NumberFormat.compact(simulation.get_waiting_total(node.id)), LineBalance.BUFFER_CAPACITY, _status_text(simulation.get_status(node.id))])
+		NodeDefinitions.Type.OUTPUT:
+			lines.append("Input %s/sec" % _rate(simulation.telemetry.arrival_rate(node.id)))
+			lines.append("Acceptance %s/sec" % _rate(simulation.get_capacity(node.id)))
+			lines.append("Revenue %s/sec  ·  total %s" % [_rate(simulation.telemetry.payout_rate(node.id)), NumberFormat.money(simulation.get_revenue(node.id))])
+			var payout_complexity := simulation.get_last_payout_complexity(node.id)
+			lines.append("Last payout complexity %s" % ("none yet" if payout_complexity < 0 else str(payout_complexity)))
+			lines.append("Status %s" % _status_text(simulation.get_status(node.id)))
+		NodeDefinitions.Type.SPLITTER:
+			lines.append("Input %s/sec" % _rate(simulation.telemetry.arrival_rate(node.id)))
+			var branches: Array = manager.graph.get_outgoing(node.id)
+			for index in range(branches.size()):
+				lines.append("Branch %s → #%d  %s/sec" % ["A" if index == 0 else "B", branches[index], _rate(simulation.telemetry.edge_rate(node.id, branches[index]))])
+			lines.append("Routing: alternating, odd units alternate")
+			lines.append("Queue %s/%d  ·  %s" % [NumberFormat.compact(simulation.get_waiting_total(node.id)), LineBalance.BUFFER_CAPACITY, _status_text(simulation.get_status(node.id))])
+		NodeDefinitions.Type.MERGER:
+			for from_id in manager.graph.get_incoming(node.id):
+				lines.append("Input #%d  %s/sec" % [from_id, _rate(simulation.telemetry.edge_rate(from_id, node.id))])
+			lines.append("Output %s/sec  ·  capacity %s/sec" % [_rate(simulation.telemetry.processed_rate(node.id)), _rate(simulation.get_capacity(node.id))])
+			lines.append("Queue %s/%d  ·  %s" % [NumberFormat.compact(simulation.get_waiting_total(node.id)), LineBalance.BUFFER_CAPACITY, _status_text(simulation.get_status(node.id))])
+		NodeDefinitions.Type.BOOSTER:
+			lines.append("Capacity bonus +%d%%" % roundi(LineBalance.BOOSTER_BONUS * 100.0))
+			var targets := manager.get_boost_targets(node.id)
+			if targets.is_empty():
+				lines.append("Affects: nothing yet. Place beside a Processor.")
+			else:
+				var names: Array[String] = []
+				for target in targets:
+					names.append("#%d" % target)
+				lines.append("Affects: PROCESSOR %s" % ", ".join(PackedStringArray(names)))
+			lines.append("Rule: orthogonal neighbours, no stacking")
 
 	return "\n".join(PackedStringArray(lines))
+
+
+func _rate(value: float) -> String:
+	return "%.1f" % value
+
+
+func _status_text(status: int) -> String:
+	match status:
+		ProductionSimulation.Status.BOTTLENECK:
+			return "BOTTLENECK"
+		ProductionSimulation.Status.BLOCKED:
+			return "BLOCKED (waiting on output)"
+		ProductionSimulation.Status.SATURATED:
+			return "BUSY"
+		_:
+			return "OK"
