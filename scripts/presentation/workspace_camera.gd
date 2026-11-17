@@ -42,6 +42,11 @@ func world_to_screen(world: Vector2) -> Vector2:
 	return offset + world * zoom
 
 
+# True when a world point sits inside the usable band on screen. Used to decide whether a reveal is needed.
+func is_visible_in(world: Vector2, band: Rect2) -> bool:
+	return band.has_point(world_to_screen(world))
+
+
 func screen_to_world(screen: Vector2) -> Vector2:
 	return (screen - offset) / zoom
 

@@ -11,9 +11,6 @@ const HANDLE_RADIUS := 11.0
 const UNIT_RADIUS := 9.0
 const CONNECTION_WIDTH := 6.0
 const ARROW_SIZE := 14.0
-const GRID_DOT_RADIUS := 2.5
-const GRID_DOT_ALPHA := 0.25
-const GRID_DOT_HINT_ALPHA := 0.6
 const LABEL_FONT_SIZE := 18
 const BADGE_FONT_SIZE := 16
 const PAYOUT_FONT_SIZE := 26
@@ -55,7 +52,10 @@ class Flash:
 var simulation: ProductionSimulation
 var graph: NetworkGraph
 var layout: WorkspaceLayout
+# Booster coverage model in use. Selected Boosters show the Processors this model covers.
+var booster_model: int = BoosterModel.DEFAULT_MODE
 var camera: WorkspaceCamera
+var progression: ProgressionManager
 var selected_id: int = 0
 # Brightens empty cells while the player is choosing a destination.
 var placement_hint: bool = false
@@ -68,11 +68,24 @@ var preview_target_valid: bool = false
 var _payouts: Array[FloatingPayout] = []
 var _cell_flashes: Array[Flash] = []
 var _connection_flashes: Array[Flash] = []
+# Cells the next expansion would unlock, outlined while the Progress sheet is open.
+var _preview_cells: Dictionary = {}
+# Cells unlocked since the last sync, mapped to their age in seconds. Presentation only; never saved.
+var _reveal_ages: Dictionary = {}
+var _known_cells: Dictionary = {}
+var _known_progression: ProgressionManager
 
 
 func _process(delta: float) -> void:
+	_track_unlocks(delta)
 	_advance_effects(delta)
 	queue_redraw()
+
+
+func set_preview_cells(cells: Array) -> void:
+	_preview_cells.clear()
+	for cell in cells:
+		_preview_cells[cell] = true
 
 
 func show_payout(amount: LargeNumber, output_id: int, complexity: int) -> void:
@@ -192,24 +205,112 @@ func _count_flow_per_connection() -> Dictionary:
 
 
 func _draw_grid() -> void:
+	_draw_world_boundary()
 	for column in range(WorkspaceLayout.COLUMNS):
 		for row in range(WorkspaceLayout.ROWS):
-			var cell := Vector2i(column, row)
-			var color := LinePalette.GRID_DOT
-			color.a = GRID_DOT_HINT_ALPHA if placement_hint and layout.is_cell_free(cell) else GRID_DOT_ALPHA
-			draw_circle(layout.get_cell_center(cell), GRID_DOT_RADIUS, color)
+			_draw_cell(Vector2i(column, row))
 
 
-# Faint links from each Booster to the Processors it boosts. Drawn beneath connections.
+# A hard edge around the whole world, so the play area stays readable, including its locked space.
+func _draw_world_boundary() -> void:
+	var world := WorkspaceStyle.world_rect()
+	var color := LinePalette.CONNECTION
+	draw_rect(world, Color(color, WorkspaceVisuals.BOUNDARY_GLOW_ALPHA), false, WorkspaceVisuals.BOUNDARY_GLOW_WIDTH)
+	draw_rect(world, Color(color, WorkspaceVisuals.BOUNDARY_ALPHA), false, WorkspaceVisuals.BOUNDARY_WIDTH)
+	var corners: Array[Vector2] = [world.position, Vector2(world.end.x, world.position.y), world.end, Vector2(world.position.x, world.end.y)]
+	for corner in corners:
+		var inward_x: float = -signf(corner.x) * WorkspaceVisuals.CORNER_LENGTH
+		var inward_y: float = -signf(corner.y) * WorkspaceVisuals.CORNER_LENGTH
+		var mark := Color(color, WorkspaceVisuals.BOUNDARY_ALPHA)
+		draw_line(corner, corner + Vector2(inward_x, 0.0), mark, WorkspaceVisuals.BOUNDARY_WIDTH * 1.6)
+		draw_line(corner, corner + Vector2(0.0, inward_y), mark, WorkspaceVisuals.BOUNDARY_WIDTH * 1.6)
+
+
+# Three states: unlocked (buildable), locked (expandable, quiet), and outside the world (not drawn here).
+func _draw_cell(cell: Vector2i) -> void:
+	var center := layout.get_cell_center(cell)
+	var half := Vector2.ONE * (WorkspaceLayout.CELL_SIZE * 0.5 - WorkspaceVisuals.CELL_INSET)
+	var rect := Rect2(center - half, half * 2.0)
+	var unlocked := progression == null or progression.is_cell_unlocked(cell)
+	var age: float = _reveal_ages.get(cell, -1.0)
+	var fresh := age >= 0.0
+
+	# Newly bought cells start looking locked and brighten into their unlocked state.
+	var locked_amount := 0.0 if unlocked else 1.0
+	if fresh:
+		locked_amount = 1.0 - WorkspaceStyle.transition_progress(age)
+	var unlocked_amount := 1.0 - locked_amount
+
+	if locked_amount > 0.0:
+		draw_rect(rect, Color(Color.BLACK, WorkspaceVisuals.LOCKED_FILL_ALPHA * locked_amount), true)
+	var marker_alpha := lerpf(WorkspaceVisuals.UNLOCKED_MARKER_ALPHA, WorkspaceVisuals.LOCKED_MARKER_ALPHA, locked_amount)
+	var marker_radius := lerpf(WorkspaceVisuals.UNLOCKED_MARKER_RADIUS, WorkspaceVisuals.LOCKED_MARKER_RADIUS, locked_amount)
+	draw_circle(center, marker_radius, Color(LinePalette.GRID_DOT.lightened(0.3), marker_alpha))
+
+	if unlocked_amount > 0.0:
+		draw_rect(rect, Color(LinePalette.GRID_DOT, WorkspaceVisuals.UNLOCKED_TINT_ALPHA * unlocked_amount), true)
+		draw_rect(rect, Color(LinePalette.GRID_DOT, WorkspaceVisuals.UNLOCKED_OUTLINE_ALPHA * unlocked_amount), false, 1.5)
+
+	if not unlocked and _preview_cells.has(cell):
+		draw_rect(rect, Color(LinePalette.PAYOUT_HIGHLIGHT, WorkspaceVisuals.PREVIEW_OUTLINE_ALPHA), false, 2.0)
+
+	# Placement emphasis only while choosing a destination. Occupied and locked cells keep their treatment.
+	if placement_hint and unlocked and layout.is_cell_free(cell):
+		draw_rect(rect, Color(LinePalette.OUTPUT, WorkspaceVisuals.PLACEMENT_VALID_TINT_ALPHA), true)
+		draw_rect(rect, Color(LinePalette.OUTPUT, WorkspaceVisuals.PLACEMENT_VALID_OUTLINE_ALPHA), false, 2.5)
+
+	if fresh:
+		var strength := WorkspaceStyle.reveal_strength(age)
+		draw_rect(rect, Color(LinePalette.PAYOUT_HIGHLIGHT, WorkspaceVisuals.REVEAL_GLOW_ALPHA * strength * unlocked_amount), true)
+		draw_rect(rect, Color(LinePalette.PAYOUT_HIGHLIGHT, strength * 0.8), false, 3.0)
+
+
+# Detects cells unlocked since the last frame. The first sync after a session starts is silent,
+# so loading a save or resetting never plays an expansion reveal.
+func _track_unlocks(delta: float) -> void:
+	if progression == null:
+		return
+	if progression != _known_progression:
+		_known_progression = progression
+		_known_cells.clear()
+		for cell in progression.unlocked_cells():
+			_known_cells[cell] = true
+		_reveal_ages.clear()
+	elif progression.unlocked_cell_count() != _known_cells.size():
+		for cell in progression.unlocked_cells():
+			if not _known_cells.has(cell):
+				_known_cells[cell] = true
+				_reveal_ages[cell] = 0.0
+
+	for cell in _reveal_ages.keys():
+		_reveal_ages[cell] += delta
+		if _reveal_ages[cell] >= WorkspaceVisuals.REVEAL_SECONDS:
+			_reveal_ages.erase(cell)
+
+
+# Faint links from each Booster to the Processors it boosts. A selected Booster shows its full coverage, so the player
+# can see which Processors it helps. Drawn beneath connections.
 func _draw_booster_links() -> void:
+	var selected_coverage := _selected_booster_coverage()
 	for id in graph.get_node_ids():
 		if graph.get_node(id).type != NodeDefinitions.Type.BOOSTER:
+			continue
+		if id == selected_id:
+			for target in selected_coverage:
+				draw_line(_node_position(id), _node_position(target), LinePalette.SELECTION, BOOSTER_LINK_WIDTH + 1.0, true)
 			continue
 		var color := LinePalette.BOOSTER_LINK
 		color.a = BOOSTER_LINK_ALPHA
 		for neighbour in layout.get_neighbor_ids(id):
 			if graph.get_node(neighbour).boosted:
 				draw_line(_node_position(id), _node_position(neighbour), color, BOOSTER_LINK_WIDTH, true)
+
+
+# Processors the selected Booster covers under the active model. Empty when nothing or a non-Booster is selected.
+func _selected_booster_coverage() -> Array:
+	if selected_id == 0 or not graph.has_node(selected_id) or graph.get_node(selected_id).type != NodeDefinitions.Type.BOOSTER:
+		return []
+	return BoosterCoverage.targets(graph, layout, selected_id, booster_model)
 
 
 # Connections brighten with flow, so a busy route reads as busy without extra objects.
@@ -261,6 +362,7 @@ func _draw_drag_preview() -> void:
 
 
 func _draw_nodes() -> void:
+	var selected_coverage := _selected_booster_coverage()
 	for id in graph.get_node_ids():
 		var node := graph.get_node(id)
 		var center := _node_position(id)
@@ -272,6 +374,8 @@ func _draw_nodes() -> void:
 		_draw_node_shape(node, center)
 		if node.boosted:
 			draw_arc(center, NODE_RADIUS + 8.0, 0.0, TAU, 40, LinePalette.BOOSTER_LINK, 2.0, true)
+		if selected_coverage.has(id):
+			draw_arc(center, NODE_RADIUS + 14.0, 0.0, TAU, 40, LinePalette.SELECTION, 3.0, true)
 
 		_draw_label(center, NodeDefinitions.get_display_name(node.type))
 

@@ -21,8 +21,10 @@ class NetworkNode:
 	var id: int
 	var type: int
 	var level: int = 1
-	# Set by NetworkManager from grid adjacency to Boosters. Never set by the graph itself.
+	# Set by NetworkManager from Booster coverage. Never set by the graph itself.
 	var boosted: bool = false
+	# Id of the Booster whose effect applies to this Processor (lowest covering id). 0 when not boosted.
+	var boost_owner: int = 0
 
 	func _init(node_id: int, node_type: int) -> void:
 		id = node_id
@@ -33,6 +35,22 @@ var _nodes: Dictionary = {}
 var _outgoing: Dictionary = {}
 var _incoming: Dictionary = {}
 var _next_id: int = 1
+
+
+func restore_node(id: int, type: int, level: int) -> void:
+	_nodes[id] = NetworkNode.new(id, type)
+	_nodes[id].level = level
+	_outgoing[id] = []
+	_incoming[id] = []
+	_next_id = maxi(_next_id, id + 1)
+
+
+func next_id() -> int:
+	return _next_id
+
+
+func restore_next_id(value: int) -> void:
+	_next_id = maxi(_next_id, value)
 
 
 func add_node(type: int) -> int:

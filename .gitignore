@@ -26,3 +26,6 @@ Desktop.ini
 *.apk.idsig
 *.aab
 
+# Balance harness output (generated, not committed)
+balance_results/
+

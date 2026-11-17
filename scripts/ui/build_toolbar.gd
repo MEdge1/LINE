@@ -8,6 +8,7 @@ signal placement_requested(type: int)
 const BUTTON_HEIGHT := 60.0
 const FONT_SIZE := 18
 const UNAFFORDABLE_ALPHA := 0.4
+const LOCKED_ALPHA := 0.35
 const TYPES := [
 	NodeDefinitions.Type.GENERATOR,
 	NodeDefinitions.Type.PROCESSOR,
@@ -41,6 +42,12 @@ func _ready() -> void:
 func refresh(manager: NetworkManager, active_type: int) -> void:
 	for type in TYPES:
 		var button: Button = _buttons[type]
+		var unlocked := manager.progression.is_type_unlocked(type)
+		button.disabled = not unlocked
+		if not unlocked:
+			button.text = "%s  LOCKED" % NodeDefinitions.get_display_name(type)
+			button.modulate = Color(1.0, 1.0, 1.0, LOCKED_ALPHA)
+			continue
 		var prefix := "> " if type == active_type else ""
 		button.text = "%s%s  $%d" % [prefix, NodeDefinitions.get_display_name(type), NodeDefinitions.get_cost(type)]
 		button.modulate = Color.WHITE if manager.can_afford(type) else Color(1.0, 1.0, 1.0, UNAFFORDABLE_ALPHA)

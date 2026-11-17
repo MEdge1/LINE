@@ -22,6 +22,7 @@ const OUTPUT_HANDLE_OFFSET := 58.0
 const HANDLE_HIT_RADIUS := 44.0
 
 var mode: int = Mode.IDLE
+var input_enabled := true
 var placement_type: int = -1
 var selected_id: int = 0
 var delete_armed: bool = false
@@ -47,7 +48,20 @@ func setup(manager: NetworkManager, camera: WorkspaceCamera) -> void:
 	_camera = camera
 
 
+# Panels that cover the workspace turn workspace input off. Any gesture in progress is dropped.
+func set_input_enabled(enabled: bool) -> void:
+	input_enabled = enabled
+	if not enabled:
+		_pointers.clear()
+		_primary_pointer = NO_POINTER
+		_gesture_moved = false
+		_cancel_drag_connection()
+
+
 func begin_place(type: int) -> void:
+	if not _manager.progression.is_type_unlocked(type):
+		feedback.emit("Unlock %s in PROGRESS first" % NodeDefinitions.get_display_name(type), true)
+		return
 	if not _manager.can_afford(type):
 		feedback.emit("Need $%d for %s" % [NodeDefinitions.get_cost(type), NodeDefinitions.get_display_name(type)], true)
 		return
@@ -77,6 +91,15 @@ func begin_move() -> void:
 
 	mode = Mode.MOVE
 	feedback.emit("Tap an empty cell to move the node", false)
+	state_changed.emit()
+
+
+func reset_session_state() -> void:
+	mode = Mode.IDLE
+	placement_type = -1
+	selected_id = 0
+	delete_armed = false
+	_clear_drag_connection()
 	state_changed.emit()
 
 
@@ -129,6 +152,8 @@ func request_delete() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if not input_enabled:
+		return
 	if event is InputEventScreenTouch:
 		var touch := event as InputEventScreenTouch
 		if touch.pressed:
@@ -363,6 +388,10 @@ func _placement_message(result: NetworkManager.PlacementResult) -> String:
 	match result:
 		NetworkManager.PlacementResult.OUT_OF_BOUNDS:
 			return "Outside the grid"
+		NetworkManager.PlacementResult.CELL_LOCKED:
+			return "That area is still locked. Buy space in PROGRESS"
+		NetworkManager.PlacementResult.TECHNOLOGY_LOCKED:
+			return "Unlock this technology in PROGRESS first"
 		NetworkManager.PlacementResult.CELL_OCCUPIED:
 			return "That cell is occupied"
 		NetworkManager.PlacementResult.INSUFFICIENT_FUNDS:

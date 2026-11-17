@@ -146,10 +146,16 @@ func _describe(manager: NetworkManager, node: NetworkGraph.NetworkNode) -> Strin
 			lines.append("Connections %d/%d" % [outputs, NodeDefinitions.get_max_outputs(node.type)])
 			lines.append("Status %s" % _status_text(simulation.get_status(node.id)))
 		NodeDefinitions.Type.PROCESSOR:
-			lines.append("Multiplier ×%d  ·  Incoming complexity %d" % [LineBalance.PROCESSOR_MULTIPLIER, simulation.get_incoming_complexity(node.id)])
+			lines.append("Multiplier ×%d  ·  Incoming complexity %d  ·  Model %s" % [LineBalance.PROCESSOR_MULTIPLIER, simulation.get_incoming_complexity(node.id), ProcessingBalance.short_label(simulation.processing_mode)])
 			var base := NodeDefinitions.get_capacity(node.type)
+			lines.append("Boosted %s  ·  Booster model %s" % ["Yes" if node.boosted else "No", BoosterModel.label(simulation.booster_model)])
+			if node.boosted:
+				var authoritative := simulation.get_incoming_complexity(node.id)
+				var spec := simulation.relief_spec()
+				var relief := ComplexityRelief.relief_amount(authoritative, spec) if not spec.is_empty() else 0
+				lines.append("Authoritative complexity %d  ·  Effective %d  ·  Relief %d" % [authoritative, maxi(authoritative - relief, 0), relief])
 			lines.append("Base %s/sec%s" % [_rate(base), "  ·  booster +%d%%" % roundi(LineBalance.BOOSTER_BONUS * 100.0) if node.boosted else ""])
-			lines.append("Complexity ×%.2f  ·  Effective %s/sec" % [ComplexityModel.processing_modifier(simulation.get_incoming_complexity(node.id)), _rate(simulation.get_effective_capacity(node.id))])
+			lines.append("Complexity ×%.3f  ·  Effective %s/sec" % [ComplexityModel.processing_modifier(simulation.get_incoming_complexity(node.id), simulation.processing_mode), _rate(simulation.get_effective_capacity(node.id))])
 			lines.append("Input %s/sec  ·  Utilization %d%%" % [_rate(simulation.telemetry.arrival_rate(node.id)), roundi(simulation.get_utilization(node.id) * 100.0)])
 			lines.append("Queue %s/%d  ·  %s" % [NumberFormat.compact(simulation.get_waiting_total(node.id)), LineBalance.BUFFER_CAPACITY, _status_text(simulation.get_status(node.id))])
 		NodeDefinitions.Type.OUTPUT:
@@ -172,22 +178,41 @@ func _describe(manager: NetworkManager, node: NetworkGraph.NetworkNode) -> Strin
 			lines.append("Output %s/sec  ·  capacity %s/sec" % [_rate(simulation.telemetry.processed_rate(node.id)), _rate(simulation.get_capacity(node.id))])
 			lines.append("Queue %s/%d  ·  %s" % [NumberFormat.compact(simulation.get_waiting_total(node.id)), LineBalance.BUFFER_CAPACITY, _status_text(simulation.get_status(node.id))])
 		NodeDefinitions.Type.BOOSTER:
-			lines.append("Capacity bonus +%d%%" % roundi(LineBalance.BOOSTER_BONUS * 100.0))
+			lines.append("Model %s  ·  Coverage %s" % [BoosterModel.label(simulation.booster_model), _coverage_text(simulation.booster_model)])
+			lines.append("Capacity +%d%%  ·  Complexity Relief %s" % [roundi(LineBalance.BOOSTER_BONUS * 100.0), _relief_text(simulation.booster_model)])
 			var targets := manager.get_boost_targets(node.id)
 			if targets.is_empty():
-				lines.append("Affects: nothing yet. Place beside a Processor.")
+				lines.append("Affected: nothing yet. Place beside a Processor.")
 			else:
 				var names: Array[String] = []
-				for target in targets:
+				for target in targets.slice(0, 6):
 					names.append("#%d" % target)
-				lines.append("Affects: PROCESSOR %s" % ", ".join(PackedStringArray(names)))
-			lines.append("Rule: orthogonal neighbours, no stacking")
+				var more := "" if targets.size() <= 6 else "  +%d more" % (targets.size() - 6)
+				lines.append("Affected %d Processor%s: %s%s" % [targets.size(), "" if targets.size() == 1 else "s", ", ".join(PackedStringArray(names)), more])
 
 	return "\n".join(PackedStringArray(lines))
 
 
 func _rate(value: float) -> String:
 	return "%.1f" % value
+
+
+func _coverage_text(mode: int) -> String:
+	match mode:
+		BoosterModel.Mode.CHAIN_B, BoosterModel.Mode.CHAIN_C:
+			return "Graph distance %d" % BoosterModel.GRAPH_REACH
+		BoosterModel.Mode.RADIUS_B:
+			return "Manhattan radius %d" % BoosterModel.RADIUS
+	return "Orthogonal neighbours"
+
+
+func _relief_text(mode: int) -> String:
+	match mode:
+		BoosterModel.Mode.CHAIN_B, BoosterModel.Mode.RADIUS_B:
+			return "%d%% · minimum %d" % [roundi(BoosterModel.RELIEF_FRACTION_B * 100.0), BoosterModel.RELIEF_MINIMUM]
+		BoosterModel.Mode.CHAIN_C:
+			return "%d%% · minimum %d" % [roundi(BoosterModel.RELIEF_FRACTION_C * 100.0), BoosterModel.RELIEF_MINIMUM]
+	return "none"
 
 
 func _status_text(status: int) -> String:

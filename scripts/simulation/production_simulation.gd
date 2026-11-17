@@ -14,6 +14,7 @@ extends RefCounted
 # Presentation reads this state and never changes it.
 
 signal payout_received(amount: LargeNumber, output_id: int, complexity: int)
+signal units_processed(node_id: int, count: int)
 
 enum Status { NORMAL, SATURATED, BOTTLENECK, BLOCKED }
 
@@ -41,6 +42,10 @@ var _last_payout_complexity: Dictionary = {}
 var _processor_multiplier := LargeNumber.from_int(LineBalance.PROCESSOR_MULTIPLIER)
 var _unit_value := LargeNumber.from_int(LineBalance.UNIT_START_VALUE)
 var _buffer_size := LineBalance.BUFFER_CAPACITY
+# Processing-work rule for Product Complexity. Changed only through set_processing_mode.
+var processing_mode: int = ProcessingBalance.Mode.LIVE_HYPERBOLIC
+# Booster coverage model. Changed only through change_booster_model (via NetworkManager.set_booster_model).
+var booster_model: int = BoosterModel.DEFAULT_MODE
 
 
 func _init(graph: NetworkGraph) -> void:
@@ -139,7 +144,9 @@ func get_capacity(node_id: int) -> float:
 	if node.type == NodeDefinitions.Type.GENERATOR:
 		return get_generator_rate(node_id)
 	var base := NodeDefinitions.get_capacity(node.type)
-	if node.boosted and NodeDefinitions.is_boostable(node.type):
+	# A relief model (test-only) replaces the throughput bonus on Processors.
+	var relief_replaces_bonus := ComplexityRelief.replaces_bonus() and node.type == NodeDefinitions.Type.PROCESSOR
+	if node.boosted and NodeDefinitions.is_boostable(node.type) and not relief_replaces_bonus:
 		return base * (1.0 + LineBalance.BOOSTER_BONUS)
 	return base
 
@@ -153,8 +160,27 @@ func get_utilization(node_id: int) -> float:
 func get_effective_capacity(node_id: int) -> float:
 	var capacity := get_capacity(node_id)
 	if _graph.get_node(node_id).type == NodeDefinitions.Type.PROCESSOR:
-		return capacity * ComplexityModel.processing_modifier(get_incoming_complexity(node_id))
+		return capacity * ComplexityModel.processing_modifier(_work_complexity(node_id, get_incoming_complexity(node_id)), processing_mode)
 	return capacity
+
+
+# Complexity that sets a Processor's speed. Equal to the batch complexity unless the Processor is boosted with relief.
+func _work_complexity(node_id: int, complexity: int) -> int:
+	var node := _graph.get_node(node_id)
+	if not node.boosted or node.type != NodeDefinitions.Type.PROCESSOR:
+		return complexity
+	var spec := relief_spec()
+	if spec.is_empty():
+		return complexity
+	return ComplexityRelief.effective(complexity, spec)
+
+
+# Relief for boosted Processors. A test-only override (ComplexityRelief.active) wins; otherwise the selected model.
+func relief_spec() -> Dictionary:
+	if ComplexityRelief.is_active():
+		return ComplexityRelief.active
+	return BoosterModel.relief_spec(booster_model)
+
 
 
 # Complexity of the batch a Processor is working on next. When nothing unprocessed is queued,
@@ -197,6 +223,50 @@ func get_status(node_id: int) -> int:
 func seed_queue(node_id: int, quantity: LargeNumber, value: LargeNumber, processed: bool, complexity: int = 0) -> void:
 	produced_units = produced_units.add(quantity)
 	_deposit(node_id, ResourceBatch.new(quantity, value, node_id, 0, processed, complexity))
+
+
+# Switches the processing rule while the machine runs. No resource, value, complexity, or queue changes: only
+# the time left on each Processor's current unit is rescaled. A Processor that is 50% through its unit under one
+# rule stays 50% through it under the other. A Processor with nothing to work on keeps no progress.
+func set_processing_mode(mode: int) -> void:
+	if mode == processing_mode:
+		return
+	_rescale_units(func() -> void:
+		processing_mode = mode)
+
+
+# Switches the Booster coverage model. Boost state changes through `refresh`, and each Processor's current unit keeps
+# its progress fraction under the new capacity and work requirement. No resource, value, or queue changes.
+func change_booster_model(mode: int, refresh: Callable) -> void:
+	_rescale_units(func() -> void:
+		booster_model = mode
+		refresh.call())
+
+
+# Keeps each Processor's progress fraction across a change in work requirement. Units are measured before `change`
+# runs and rescaled after it, so the caller decides what changes (processing rule, boost state, or both).
+func _rescale_units(change: Callable) -> void:
+	var fractions := {}
+	for node_id in _graph.get_node_ids():
+		if _graph.get_node(node_id).type != NodeDefinitions.Type.PROCESSOR:
+			continue
+		var head := _first_unprocessed(_queue(node_id))
+		if head == null:
+			fractions[node_id] = 0.0
+			continue
+		var capacity := get_capacity(node_id)
+		var old_cost := ComplexityModel.unit_cost_seconds(capacity, _work_complexity(node_id, head.complexity), processing_mode)
+		var stored: float = _budgets.get(node_id, 0.0)
+		fractions[node_id] = clampf(stored / old_cost, 0.0, 1.0) if old_cost > 0.0 else 0.0
+	change.call()
+	for node_id in fractions:
+		var head := _first_unprocessed(_queue(node_id))
+		if head == null:
+			_budgets[node_id] = 0.0
+			continue
+		var capacity := get_capacity(node_id)
+		var work := _work_complexity(node_id, head.complexity)
+		_budgets[node_id] = fractions[node_id] * ComplexityModel.unit_cost_seconds(capacity, work, processing_mode)
 
 
 func step(delta: float) -> void:
@@ -266,6 +336,118 @@ func return_edge_to_source(from_id: int, to_id: int) -> LargeNumber:
 	return returned
 
 
+# Authoritative state for saving. Telemetry, reservations, and boost flags are not saved: they
+# are rebuilt or restarted on load. Numbers are exact texts, and node references are ids.
+func export_state() -> Dictionary:
+	var state := {
+		"money": money.to_text(),
+		"produced": produced_units.to_text(),
+		"paid": paid_units.to_text(),
+		"lost": lost_units.to_text(),
+		"in_flight": [],
+		"queues": [],
+		"returning": [],
+		"revenue": [],
+		"accumulators": [],
+		"budgets": [],
+		"split_parity": [],
+		"last_incoming": [],
+		"last_payout_complexity": [],
+	}
+	for batch in in_flight:
+		state["in_flight"].append(_batch_to_dict(batch))
+	for node_id in _queues:
+		state["queues"].append({"node": node_id, "batches": _batches_to_array(_queues[node_id])})
+	for node_id in _returning:
+		state["returning"].append({"node": node_id, "batches": _batches_to_array(_returning[node_id])})
+	for node_id in _revenue:
+		state["revenue"].append([node_id, _revenue[node_id].to_text()])
+	for node_id in _production_accumulators:
+		state["accumulators"].append([node_id, _production_accumulators[node_id]])
+	for node_id in _budgets:
+		state["budgets"].append([node_id, _budgets[node_id]])
+	for node_id in _split_parity:
+		state["split_parity"].append([node_id, _split_parity[node_id]])
+	for node_id in _last_incoming:
+		state["last_incoming"].append([node_id, _last_incoming[node_id]])
+	for node_id in _last_payout_complexity:
+		state["last_payout_complexity"].append([node_id, _last_payout_complexity[node_id]])
+	return state
+
+
+# Restores state exported by export_state. The caller validates node references first.
+func import_state(state: Dictionary) -> void:
+	money = LargeNumber.from_text(state["money"])
+	produced_units = LargeNumber.from_text(state["produced"])
+	paid_units = LargeNumber.from_text(state["paid"])
+	lost_units = LargeNumber.from_text(state["lost"])
+
+	in_flight.clear()
+	for entry in state["in_flight"]:
+		in_flight.append(_batch_from_dict(entry))
+	_queues.clear()
+	for entry in state["queues"]:
+		_queues[int(entry["node"])] = _batches_from_array(entry["batches"])
+	_returning.clear()
+	for entry in state["returning"]:
+		_returning[int(entry["node"])] = _batches_from_array(entry["batches"])
+	_revenue.clear()
+	for pair in state["revenue"]:
+		_revenue[int(pair[0])] = LargeNumber.from_text(pair[1])
+	_production_accumulators = _pairs_to_dict(state["accumulators"], false)
+	_budgets = _pairs_to_dict(state["budgets"], false)
+	_split_parity = _pairs_to_dict(state["split_parity"], true)
+	_last_incoming = _pairs_to_dict(state["last_incoming"], true)
+	_last_payout_complexity = _pairs_to_dict(state["last_payout_complexity"], true)
+	_reserved.clear()
+
+
+func _batch_to_dict(batch: ResourceBatch) -> Dictionary:
+	return {
+		"quantity": batch.quantity.to_text(),
+		"value": batch.value_per_unit.to_text(),
+		"complexity": batch.complexity,
+		"processed": batch.processed,
+		"from": batch.from_id,
+		"to": batch.to_id,
+		"progress": batch.progress,
+	}
+
+
+func _batch_from_dict(entry: Dictionary) -> ResourceBatch:
+	var batch := ResourceBatch.new(
+		LargeNumber.from_text(entry["quantity"]),
+		LargeNumber.from_text(entry["value"]),
+		int(entry["from"]),
+		int(entry["to"]),
+		bool(entry["processed"]),
+		int(entry["complexity"])
+	)
+	batch.progress = float(entry["progress"])
+	return batch
+
+
+func _batches_to_array(batches: Array) -> Array:
+	var result: Array = []
+	for batch in batches:
+		result.append(_batch_to_dict(batch))
+	return result
+
+
+func _batches_from_array(entries: Array) -> Array:
+	var result: Array = []
+	for entry in entries:
+		result.append(_batch_from_dict(entry))
+	return result
+
+
+func _pairs_to_dict(pairs: Array, as_int: bool) -> Dictionary:
+	var result := {}
+	for pair in pairs:
+		result[int(pair[0])] = int(pair[1]) if as_int else float(pair[1])
+	return result
+
+
 func _advance_in_flight(delta: float) -> void:
 	for index in range(in_flight.size() - 1, -1, -1):
 		var batch := in_flight[index]
@@ -305,7 +487,7 @@ func _run_processor(node_id: int, delta: float) -> void:
 	var capacity := get_capacity(node_id)
 	var queue := _queue(node_id)
 	var head := _first_unprocessed(queue)
-	var min_seconds := 0.0 if head == null else ComplexityModel.unit_cost_seconds(capacity, head.complexity)
+	var min_seconds := 0.0 if head == null else ComplexityModel.unit_cost_seconds(capacity, _work_complexity(node_id, head.complexity), processing_mode)
 	var budget := _advance_budget(node_id, delta, min_seconds)
 	var consumed := 0
 	var index := 0
@@ -317,7 +499,7 @@ func _run_processor(node_id: int, delta: float) -> void:
 			continue
 
 		# Strict FIFO: a unit that cannot be afforded yet holds back everything queued behind it.
-		var unit_cost := ComplexityModel.unit_cost_seconds(capacity, item.complexity)
+		var unit_cost := ComplexityModel.unit_cost_seconds(capacity, _work_complexity(node_id, item.complexity), processing_mode)
 		var count := mini(item.quantity.to_int_clamped(), floori(budget / unit_cost + EPSILON))
 		if count <= 0:
 			break
@@ -332,6 +514,8 @@ func _run_processor(node_id: int, delta: float) -> void:
 		_deposit(node_id, batch)
 
 	telemetry.record_processed(node_id, float(consumed))
+	if consumed > 0:
+		units_processed.emit(node_id, consumed)
 	_budgets[node_id] = budget
 	_emit_ready(node_id, false)
 
